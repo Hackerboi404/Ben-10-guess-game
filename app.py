@@ -294,7 +294,7 @@ def format_leaderboard_text(data):
     for idx, (user_id, name, count) in enumerate(data):
         rank = idx + 1
         medal = medals[idx] if rank <= 3 else f"{rank}."
-        text += f"{medal} <b>{name}</b>: {count} msgs\n"
+        text += f"{medal} <b>{name}</b>: {count} \n"
         
     return text
 
