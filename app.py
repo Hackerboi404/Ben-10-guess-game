@@ -31,7 +31,6 @@ def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
-    # Users Table
     c.execute('''CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
         username TEXT,
@@ -41,7 +40,6 @@ def init_db():
         last_msg_time TIMESTAMP
     )''')
     
-    # Message Logs Table
     c.execute('''CREATE TABLE IF NOT EXISTS message_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
@@ -49,7 +47,6 @@ def init_db():
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
     
-    # Spam Control Table
     c.execute('''CREATE TABLE IF NOT EXISTS spam_block (
         user_id INTEGER PRIMARY KEY,
         unblock_time TIMESTAMP
@@ -59,24 +56,15 @@ def init_db():
     conn.close()
 
 def check_and_reset_daily_logs():
-    """
-    Checks if it's past midnight and deletes old logs to reset 'Today' stats.
-    """
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    
     today_start = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     
-    # Check for old logs
     c.execute("SELECT COUNT(*) FROM message_log WHERE timestamp < ?", (today_start.strftime('%Y-%m-%d %H:%M:%S'),))
-    old_logs_count = c.fetchone()[0]
-    
-    if old_logs_count > 0:
-        logger.info("Performing daily reset: Deleting old message logs...")
+    if c.fetchone()[0] > 0:
+        logger.info("Performing daily reset...")
         c.execute("DELETE FROM message_log WHERE timestamp < ?", (today_start.strftime('%Y-%m-%d %H:%M:%S'),))
         conn.commit()
-        logger.info("Daily reset complete.")
-        
     conn.close()
 
 # --- HELPER FUNCTIONS ---
@@ -96,10 +84,8 @@ def is_user_spamming(user_id):
     c.execute("SELECT unblock_time FROM spam_block WHERE user_id = ?", (user_id,))
     row = c.fetchone()
     conn.close()
-    
     if row:
-        unblock_time = datetime.datetime.strptime(row[0], '%Y-%m-%d %H:%M:%S')
-        if datetime.datetime.now() < unblock_time:
+        if datetime.datetime.now() < datetime.datetime.strptime(row[0], '%Y-%m-%d %H:%M:%S'):
             return True
         else:
             conn = sqlite3.connect(DB_NAME)
@@ -107,19 +93,15 @@ def is_user_spamming(user_id):
             c.execute("DELETE FROM spam_block WHERE user_id = ?", (user_id,))
             conn.commit()
             conn.close()
-            return False
     return False
 
 def check_spam_trigger(user_id):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     one_min_ago = datetime.datetime.now() - timedelta(minutes=1)
-    
     c.execute("SELECT COUNT(*) FROM message_log WHERE user_id = ? AND timestamp > ?", 
               (user_id, one_min_ago.strftime('%Y-%m-%d %H:%M:%S')))
-    count = c.fetchone()[0]
-    
-    if count >= 15:
+    if c.fetchone()[0] >= 15:
         unblock_time = datetime.datetime.now() + timedelta(minutes=10)
         c.execute("INSERT OR REPLACE INTO spam_block (user_id, unblock_time) VALUES (?, ?)", 
                   (user_id, unblock_time.strftime('%Y-%m-%d %H:%M:%S')))
@@ -130,25 +112,17 @@ def check_spam_trigger(user_id):
     return False
 
 def update_user_data(user_id, username, first_name, group_id, context):
-    # Run daily check occasionally
     check_and_reset_daily_logs()
-
-    if is_user_spamming(user_id):
-        return False 
-    if check_spam_trigger(user_id):
+    if is_user_spamming(user_id) or check_spam_trigger(user_id):
         return False 
 
     xp_gain = random.randint(5, 15)
-    
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
-    # Check previous message count to trigger congrats
     c.execute("SELECT total_msgs FROM users WHERE user_id = ?", (user_id,))
-    result = c.fetchone()
-    prev_msgs = result[0] if result else 0
+    prev_msgs = c.fetchone()[0] if c.fetchone() else 0
     
-    # Update user stats
     c.execute('''INSERT INTO users (user_id, username, first_name, total_xp, total_msgs, last_msg_time)
                  VALUES (?, ?, ?, ?, ?, ?)
                  ON CONFLICT(user_id) DO UPDATE SET
@@ -159,68 +133,72 @@ def update_user_data(user_id, username, first_name, group_id, context):
                  last_msg_time = CURRENT_TIMESTAMP''',
               (user_id, username, first_name, 0, 0, datetime.datetime.now(), xp_gain))
     
-    # Log message
-    c.execute("INSERT INTO message_log (user_id, group_id, timestamp) VALUES (?, ?, CURRENT_TIMESTAMP)",
-              (user_id, group_id))
-              
+    c.execute("INSERT INTO message_log (user_id, group_id, timestamp) VALUES (?, ?, CURRENT_TIMESTAMP)", (user_id, group_id))
     conn.commit()
     
-    # Get new total count
     c.execute("SELECT total_msgs FROM users WHERE user_id = ?", (user_id,))
     new_msgs = c.fetchone()[0]
     conn.close()
     
-    # Check for Congrats Milestones (2000, 5000, 10000)
-    milestones = [2000, 5000, 10000]
-    if new_msgs in milestones:
+    if new_msgs in [2000, 5000, 10000]:
         try:
-            congrats_text = (
-                f"🎉 <b>Congratulations {first_name}!</b>\n\n"
-                f"You've completed <b>{new_msgs}</b> messages in this group! 🚀\n"
-                f"Keep chatting to reach higher ranks! 🏆"
-            )
-            # Send message to the group
-            context.bot.send_message(chat_id=group_id, text=congrats_text, parse_mode='HTML')
-        except Exception as e:
-            logger.error(f"Error sending congrats: {e}")
-
+            context.bot.send_message(chat_id=group_id, text=f"🎉 <b>Congratulations {first_name}!</b>\n\nYou've completed <b>{new_msgs:,}</b> messages! 🚀", parse_mode='HTML')
+        except:
+            pass
     return True
 
-# --- TELEGRAM HANDLERS ---
+# --- HANDLERS ---
 
 def start(update: Update, context: CallbackContext):
-    chat_id = update.effective_chat.id
-    if chat_id < 0: return 
-    
-    welcome_text = (
-        "👋 <b>Welcome to the Leaderboard Bot!</b>\n\n"
-        "I track messages and XP in groups.\n\n"
-        "Commands:\n"
-        "/myprofile - View your stats\n"
-        "/rank - Show your rank card\n"
-        "Add me to a group to start tracking!"
-    )
-    update.message.reply_text(welcome_text, parse_mode='HTML')
+    # Only work in Private Chat (DM)
+    if update.effective_chat.type != 'private':
+        return
+
+    # Inline Keyboard Button
+    keyboard = [[InlineKeyboardButton("➕ Add Me to Group", url=f"https://t.me/{context.bot.username}?startgroup=true")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    welcome_text = """╔════════════════════╗
+      ⚡ 𝐑𝐀𝐍𝐊𝐈𝐅𝐘 𝐁𝐎𝐓 ⚡
+╚════════════════════╝
+
+🏆 Advanced Group Ranking & XP System
+
+✨ Track Messages
+⚡ Earn XP
+🎖️ Unlock Ranks
+📊 Compete on Leaderboards
+
+━━━━━━━━━━━━━━━━━━━
+
+🔥 Features:
+➤ Real-Time Chat Ranking
+➤ Daily • Weekly • Overall Stats
+➤ XP & Level System
+➤ Smart Anti-Spam Protection
+➤ Personal Profile & Rank Cards
+
+━━━━━━━━━━━━━━━━━━━
+
+📌 Commands:
+/myprofile — View your profile stats
+/rank — Check your XP & rank
+/chatranking — Open leaderboard
+
+💎 Add me to your group and start the competition!"""
+
+    update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='HTML')
 
 def track_message(update: Update, context: CallbackContext):
     if update.effective_chat.type == 'private': return 
-    
     user = update.effective_user
     if not user: return
-    
-    group_id = update.effective_chat.id
-    
-    # Pass 'context' to enable sending congrats messages
-    success = update_user_data(user.id, user.username, user.first_name, group_id, context)
-    
-    if not success:
-        pass
+    update_user_data(user.id, user.username, user.first_name, update.effective_chat.id, context)
 
 def my_profile(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    
     c.execute("SELECT total_msgs, total_xp FROM users WHERE user_id = ?", (user_id,))
     user_data = c.fetchone()
     
@@ -228,14 +206,16 @@ def my_profile(update: Update, context: CallbackContext):
         update.message.reply_text("You haven't sent any messages in groups yet!")
         conn.close()
         return
-    
+
     total_msgs, total_xp = user_data
     
+    # Daily Stats
     today_start = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     c.execute("SELECT COUNT(*) FROM message_log WHERE user_id = ? AND timestamp >= ?", 
               (user_id, today_start.strftime('%Y-%m-%d %H:%M:%S')))
     today_msgs = c.fetchone()[0]
     
+    # Weekly Stats
     week_start = datetime.datetime.now() - timedelta(days=datetime.datetime.now().weekday())
     week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
     c.execute("SELECT COUNT(*) FROM message_log WHERE user_id = ? AND timestamp >= ?", 
@@ -243,61 +223,37 @@ def my_profile(update: Update, context: CallbackContext):
     week_msgs = c.fetchone()[0]
     
     conn.close()
-    
     rank_name = get_rank_name(total_xp)
     
-    text = (
-        f"👤 <b>Profile</b>: {update.effective_user.first_name}\n"
-        f"🏅 <b>Rank</b>: {rank_name}\n\n"
-        f"📊 <b>Statistics</b>:\n"
-        f"   • Total Messages: {total_msgs}\n"
-        f"   • Total XP: {total_xp}\n"
-        f"   • Today's Messages: {today_msgs}\n"
-        f"   • Weekly Messages: {week_msgs}"
-    )
+    text = f"👤 <b>Profile</b>: {update.effective_user.first_name}\n🏅 <b>Rank</b>: {rank_name}\n\n📊 <b>Statistics</b>:\n   • Total Messages: {total_msgs:,}\n   • Total XP: {total_xp:,}\n   • Today: {today_msgs}\n   • Weekly: {week_msgs}"
     update.message.reply_text(text, parse_mode='HTML')
 
 def show_rank(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    
     c.execute("SELECT total_xp FROM users WHERE user_id = ?", (user_id,))
     row = c.fetchone()
-    
     if not row:
-        update.message.reply_text("No data found. Send some messages in a group first!")
+        update.message.reply_text("No data found.")
         return
-        
     user_xp = row[0]
     rank_name = get_rank_name(user_xp)
     
     c.execute("SELECT user_id FROM users ORDER BY total_xp DESC")
-    all_users = c.fetchall()
     user_rank = 1
-    for u in all_users:
-        if u[0] == user_id:
-            break
+    for u in c.fetchall():
+        if u[0] == user_id: break
         user_rank += 1
-        
     conn.close()
     
-    name = update.effective_user.first_name
-    
-    text = (
-        f"🎖️ <b>{name}</b>'s Rank Card\n\n"
-        f"🏆 Rank: #{user_rank}\n"
-        f"🎖️ Title: {rank_name}\n"
-        f"✨ XP: {user_xp}"
-    )
+    text = f"🎖️ <b>{update.effective_user.first_name}</b>'s Rank Card\n\n🏆 Rank: #{user_rank}\n🎖️ Title: {rank_name}\n✨ XP: {user_xp:,}"
     update.message.reply_text(text, parse_mode='HTML')
 
 def get_leaderboard_data(period, group_id=None):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    
-    query = ""
-    params = ()
+    query, params = "", ()
     
     if period == "today":
         start_time = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -308,7 +264,6 @@ def get_leaderboard_data(period, group_id=None):
         if group_id:
             query += " AND m.group_id = ? "
             params = (params[0], group_id)
-            
     elif period == "week":
         start_time = datetime.datetime.now() - timedelta(days=datetime.datetime.now().weekday())
         start_time = start_time.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -319,7 +274,6 @@ def get_leaderboard_data(period, group_id=None):
         if group_id:
             query += " AND m.group_id = ? "
             params = (params[0], group_id)
-
     else: # Overall
         query = "SELECT user_id, first_name, total_msgs FROM users"
         if group_id:
@@ -328,9 +282,7 @@ def get_leaderboard_data(period, group_id=None):
                        WHERE m.group_id = ? GROUP BY u.user_id'''
             params = (group_id,)
 
-    if period in ["today", "week"]:
-         query += " GROUP BY u.user_id "
-    
+    if period in ["today", "week"]: query += " GROUP BY u.user_id "
     query += " ORDER BY msg_count DESC LIMIT 10"
     
     c.execute(query, params)
@@ -339,8 +291,7 @@ def get_leaderboard_data(period, group_id=None):
     return data
 
 def format_leaderboard_text(data, group_id):
-    if not data:
-        return "No messages yet!"
+    if not data: return "No messages yet!"
     
     text = ""
     medals = ["🥇", "🥈", "🥉"]
@@ -353,59 +304,27 @@ def format_leaderboard_text(data, group_id):
         rank = idx + 1
         medal = medals[idx] if rank <= 3 else f"{rank}."
         
-        # Name Trimming
+        # Clean Name
         clean_name = name if name else "Unknown"
-        if len(clean_name) > 10:
-            clean_name = clean_name[:10] + "..."
+        # Keep name readable, limit to 12 chars
+        if len(clean_name) > 12: clean_name = clean_name[:12] + ".."
         
-        text += f"{medal} {clean_name}: {count}\n"
+        # Format number with comma (e.g., 1,245)
+        count_str = f"{count:,}"
         
-    # --- FOOTER MESSAGE ---
-    # Fetch total group messages (Overall) from the database
+        # New Style: Medal 👤 Name • Count msgs
+        text += f"{medal} 👤 {clean_name} • {count_str} msgs\n"
+        
+    # Footer
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM message_log WHERE group_id = ?", (group_id,))
-    # Note: Since we delete old logs daily, 'message_log' only contains Today's/WEEK's data effectively 
-    # relative to the reset logic, BUT 'users' table has 'total_msgs'.
-    # To get ACTUAL TOTAL messages of the group ever, we sum total_msgs of all users in this group.
+    total = c.fetchone()[0]
+    conn.close()
     
-    # Better approach for "Total Messages of this group":
-    # Sum the 'total_msgs' from users table filtered by logs in this group?
-    # Actually, the simplest accurate 'Total Messages' for a group comes from counting logs if we didn't delete them.
-    # Since we DO delete logs for daily reset, we must approximate from Users table or accept that 'Total' means 'Overall Lifetime'.
-    
-    # Let's Sum 'total_msgs' of users who have sent at least one message in this group
-    # This is a bit heavy, so let's just show the count of logs available + stored total.
-    # Simplified: Just show "Total Messages: " based on the current visible period logic or raw count.
-    
-    # To satisfy your request: "Overall wale me total messages jitne honge"
-    # The 'Overall' leaderboard shows top 10 users. Let's count total messages sent in this group ever.
-    # Since we delete logs, we can't count logs. 
-    # We will trust the `users.total_msgs`. But `users` is global.
-    
-    # FIX: To get accurate GROUP total messages, we should look at a separate counter or just count current logs.
-    # Since daily reset deletes logs, we can't get historical 'Total' from logs.
-    # Let's assume "Total Messages" refers to the total volume currently tracked.
-    
-    # Alternative: Just show "Total Messages: [Sum of counts in leaderboard]" or use a dedicated table.
-    # For now, let's query the total logs currently present (which is Today/Week effectively due to reset).
-    # Wait, if we delete logs daily, we lose history.
-    
-    # Let's modify logic slightly: Don't show "Total" if we delete history.
-    # OR, show "Today's Total: X" if period is today.
-    
-    # Re-reading request: "today messages total k or same overall wale me total messages jitne honge"
-    
-    if group_id:
-        c.execute("SELECT COUNT(*) FROM message_log WHERE group_id = ?", (group_id,))
-        total = c.fetchone()[0]
-    else:
-        total = 0
-        
-    footer = f"\n📊 <b>Total Messages</b>: {total}"
+    footer = f"\n📊 <b>Total Messages</b>: {total:,}"
     text += footer
     
-    conn.close()
     return text
 
 def chatranking(update: Update, context: CallbackContext):
@@ -421,10 +340,12 @@ def chatranking(update: Update, context: CallbackContext):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    text_header = "<b>🏆 Leaderboard (Overall)</b>\n\n"
+    # New Header Style
+    header = "╔════════════════════╗\n🏆 𝐂𝐇𝐀𝐓 𝐋𝐄𝐀𝐃𝐄𝐑𝐁𝐎𝐀𝐑𝐃\n╚════════════════════╝\n\n"
+    
     leaderboard_text = format_leaderboard_text(data, group_id)
     
-    update.message.reply_text(text_header + leaderboard_text, reply_markup=reply_markup, parse_mode='HTML')
+    update.message.reply_text(header + leaderboard_text, reply_markup=reply_markup, parse_mode='HTML')
 
 def leaderboard_button_callback(update: Update, context: CallbackContext):
     query = update.callback_query
@@ -444,10 +365,11 @@ def leaderboard_button_callback(update: Update, context: CallbackContext):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     title = "Today" if period == "today" else ("This Week" if period == "week" else "Overall")
-    text_header = f"<b>🏆 Leaderboard ({title})</b>\n\n"
+    header = f"╔════════════════════╗\n🏆 𝐂𝐇𝐀𝐓 𝐋𝐄𝐀𝐃𝐄𝐑𝐁𝐎𝐀𝐑𝐃 ({title})\n╚════════════════════╝\n\n"
+    
     leaderboard_text = format_leaderboard_text(lb_data, group_id)
     
-    query.edit_message_text(text=text_header + leaderboard_text, reply_markup=reply_markup, parse_mode='HTML')
+    query.edit_message_text(text=header + leaderboard_text, reply_markup=reply_markup, parse_mode='HTML')
 
 # --- FLASK ROUTE ---
 @app.route('/')
@@ -456,14 +378,10 @@ def index():
 
 # --- MAIN EXECUTION ---
 if __name__ == '__main__':
-    # 1. Initialize Database
     init_db()
-    
-    # 2. Setup Bot
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
     
-    # 3. Register Handlers
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("myprofile", my_profile))
     dp.add_handler(CommandHandler("rank", show_rank))
@@ -471,13 +389,9 @@ if __name__ == '__main__':
     dp.add_handler(CallbackQueryHandler(leaderboard_button_callback, pattern='^lb_'))
     dp.add_handler(MessageHandler(Filters.all & ~Filters.command, track_message))
     
-    # 4. Start Bot Polling (Non-blocking)
     updater.start_polling()
     
-    # 5. Run Flask in a separate thread so it doesn't block the main thread
-    # Main thread must stay for updater.idle()
     flask_thread = Thread(target=app.run, kwargs={'host': '0.0.0.0', 'port': PORT})
     flask_thread.start()
     
-    # 6. Keep the main thread alive (This fixes the Signal Error)
     updater.idle()
