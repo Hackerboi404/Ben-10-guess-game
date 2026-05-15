@@ -204,7 +204,7 @@ def my_profile(update: Update, context: CallbackContext):
     update.message.reply_text(text, parse_mode='HTML')
 
 def show_rank(update: Update, context: CallbackContext):
-    user user_id = update.effective_user.id
+    user_id = update.effective_user.id
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
