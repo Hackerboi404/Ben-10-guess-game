@@ -1,7 +1,7 @@
 import logging
 import sqlite3
 import datetime
-from datetime import timedelta, date
+from datetime import timedelta
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, CallbackQueryHandler
@@ -10,14 +10,15 @@ import os
 from threading import Thread
 
 # --- CONFIGURATION ---
+# Render par Environment Variable use karna best hai, par default bhi diya hai
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8790602142:AAF0gqNc7xYkeOxccIqTm16Sg9ObygClRec")
 ADMIN_ID = 8739215730
 PORT = int(os.environ.get("PORT", 5000))
 
-# Flask App Setup (To keep Render dyno alive)
+# Flask App Setup (Render ko bind karne ke liye)
 app = Flask(__name__)
 
-# Logging
+# Logging Setup
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -31,6 +32,7 @@ def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
+    # Users Table
     c.execute('''CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
         username TEXT,
@@ -40,6 +42,7 @@ def init_db():
         last_msg_time TIMESTAMP
     )''')
     
+    # Message Logs Table
     c.execute('''CREATE TABLE IF NOT EXISTS message_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
@@ -47,6 +50,7 @@ def init_db():
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
     
+    # Spam Control Table
     c.execute('''CREATE TABLE IF NOT EXISTS spam_block (
         user_id INTEGER PRIMARY KEY,
         unblock_time TIMESTAMP
@@ -78,6 +82,7 @@ def is_user_spamming(user_id):
         if datetime.datetime.now() < unblock_time:
             return True
         else:
+            # Unblock user if time passed
             conn = sqlite3.connect(DB_NAME)
             c = conn.cursor()
             c.execute("DELETE FROM spam_block WHERE user_id = ?", (user_id,))
@@ -116,6 +121,7 @@ def update_user_data(user_id, username, first_name, group_id):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
+    # Update user stats
     c.execute('''INSERT INTO users (user_id, username, first_name, total_xp, total_msgs, last_msg_time)
                  VALUES (?, ?, ?, ?, ?, ?)
                  ON CONFLICT(user_id) DO UPDATE SET
@@ -126,6 +132,7 @@ def update_user_data(user_id, username, first_name, group_id):
                  last_msg_time = CURRENT_TIMESTAMP''',
               (user_id, username, first_name, 0, 0, datetime.datetime.now(), xp_gain))
     
+    # Log message
     c.execute("INSERT INTO message_log (user_id, group_id, timestamp) VALUES (?, ?, CURRENT_TIMESTAMP)",
               (user_id, group_id))
               
@@ -133,11 +140,11 @@ def update_user_data(user_id, username, first_name, group_id):
     conn.close()
     return True
 
-# --- HANDLERS ---
+# --- TELEGRAM HANDLERS ---
 
 def start(update: Update, context: CallbackContext):
     chat_id = update.effective_chat.id
-    if chat_id < 0: return 
+    if chat_id < 0: return # Ignore groups
     
     welcome_text = (
         "👋 <b>Welcome to the Leaderboard Bot!</b>\n\n"
@@ -150,7 +157,7 @@ def start(update: Update, context: CallbackContext):
     update.message.reply_text(welcome_text, parse_mode='HTML')
 
 def track_message(update: Update, context: CallbackContext):
-    if update.effective_chat.type == 'private': return 
+    if update.effective_chat.type == 'private': return # Ignore DMs
     
     user = update.effective_user
     if not user: return
@@ -167,6 +174,7 @@ def my_profile(update: Update, context: CallbackContext):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
+    # Get Total Stats
     c.execute("SELECT total_msgs, total_xp FROM users WHERE user_id = ?", (user_id,))
     user_data = c.fetchone()
     
@@ -177,11 +185,13 @@ def my_profile(update: Update, context: CallbackContext):
     
     total_msgs, total_xp = user_data
     
+    # Calculate Today's Stats
     today_start = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     c.execute("SELECT COUNT(*) FROM message_log WHERE user_id = ? AND timestamp >= ?", 
               (user_id, today_start.strftime('%Y-%m-%d %H:%M:%S')))
     today_msgs = c.fetchone()[0]
     
+    # Calculate Weekly Stats
     week_start = datetime.datetime.now() - timedelta(days=datetime.datetime.now().weekday())
     week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
     c.execute("SELECT COUNT(*) FROM message_log WHERE user_id = ? AND timestamp >= ?", 
@@ -218,13 +228,12 @@ def show_rank(update: Update, context: CallbackContext):
     user_xp = row[0]
     rank_name = get_rank_name(user_xp)
     
+    # Calculate Rank
     c.execute("SELECT user_id FROM users ORDER BY total_xp DESC")
     all_users = c.fetchall()
     user_rank = 1
-    found = False
     for u in all_users:
         if u[0] == user_id:
-            found = True
             break
         user_rank += 1
         
@@ -247,23 +256,26 @@ def get_leaderboard_data(period, group_id=None):
     query = ""
     params = ()
     
-    wrapper = '' if group_id is None else '''FROM users u JOIN message_log m ON u.user_id = m.user_id 
-                                             WHERE m.group_id = ? '''
-
     if period == "today":
-        start_time = datetime.datetime.now().replace(hour=0, minute=0, port=0, microsecond=0) # Typo fix port->second
-        query = f'''SELECT u.user_id, u.first_name, COUNT(m.id) as msg_count 
-                    {wrapper}
-                    AND m.timestamp >= ? '''
-        params = (group_id, start_time.strftime('%Y-%m-%d %H:%M:%S')) if group_id else (start_time.strftime('%Y-%m-%d %H:%M:%S'),)
+        start_time = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        query = '''SELECT u.user_id, u.first_name, COUNT(m.id) as msg_count 
+                   FROM users u JOIN message_log m ON u.user_id = m.user_id
+                   WHERE m.timestamp >= ? '''
+        params = (start_time.strftime('%Y-%m-%d %H:%M:%S'),)
+        if group_id:
+            query += " AND m.group_id = ? "
+            params = (params[0], group_id)
             
     elif period == "week":
         start_time = datetime.datetime.now() - timedelta(days=datetime.datetime.now().weekday())
         start_time = start_time.replace(hour=0, minute=0, second=0, microsecond=0)
-        query = f'''SELECT u.user_id, u.first_name, COUNT(m.id) as msg_count 
-                    {wrapper}
-                    AND m.timestamp >= ? '''
-        params = (group_id, start_time.strftime('%Y-%m-%d %H:%M:%S')) if group_id else (start_time.strftime('%Y-%m-%d %H:%M:%S'),)
+        query = '''SELECT u.user_id, u.first_name, COUNT(m.id) as msg_count 
+                   FROM users u JOIN message_log m ON u.user_id = m.user_id
+                   WHERE m.timestamp >= ? '''
+        params = (start_time.strftime('%Y-%m-%d %H:%M:%S'),)
+        if group_id:
+            query += " AND m.group_id = ? "
+            params = (params[0], group_id)
 
     else: # Overall
         query = "SELECT user_id, first_name, total_msgs FROM users"
@@ -283,6 +295,20 @@ def get_leaderboard_data(period, group_id=None):
     conn.close()
     return data
 
+def format_leaderboard_text(data):
+    if not data:
+        return "No messages yet!"
+    
+    text = ""
+    medals = ["🥇", "🥈", "🥉"]
+    
+    for idx, (user_id, name, count) in enumerate(data):
+        rank = idx + 1
+        medal = medals[idx] if rank <= 3 else f"{rank}."
+        text += f"{medal} <b>{name}</b>: {count} msgs\n"
+        
+    return text
+
 def chatranking(update: Update, context: CallbackContext):
     period = "overall"
     group_id = update.effective_chat.id
@@ -301,41 +327,29 @@ def chatranking(update: Update, context: CallbackContext):
     
     update.message.reply_text(text_header + leaderboard_text, reply_markup=reply_markup, parse_mode='HTML')
 
-def format_leaderboard_text(data):
-    if not data:
-        return "No messages yet!"
+def leaderboard_button_callback(update: Update, context: CallbackContext):
+    query = update.callback_query
+    query.answer()
     
-    text = ""
-    medals = ["🥇", "🥈", "🥉"]
+    data_parts = query.data.split('_')
+    period = data_parts[1]
+    group_id = int(data_parts[2])
     
-    for idx, (user_id, name, count) in enumerate(data):
-        rank = idx + 1
-        medal = medals[idx] if rank <= 3 else f"{rank}."
-        text += f"{medal} <b>{name}</b>: {count} msgs\n"
-        
-    def leaderboard_button_callback(update: Update, context: CallbackContext):
-        query = update.callback_query
-        query.answer()
-        
-        data_parts = query.data.split('_')
-        period = data_parts[1]
-        group_id = int(data_parts[2])
-        
-        lb_data = get_leaderboard_data(period, group_id)
-        
-        keyboard = [
-            [InlineKeyboardButton("📅 Today", callback_data=f'lb_today_{group_id}'),
-             InlineKeyboardButton("📆 Week", callback_data=f'lb_week_{group_id}')],
-            [InlineKeyboardButton("🌍 Overall", callback_data=f'lb_overall_{group_id}')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        title = "Today" if period == "today" else ("This Week" if period == "week" else "Overall")
-        text_header = f"<b>🏆 Leaderboard ({title})</b>\n\n"
-        leaderboard_text = format_leaderboard_text(lb_data)
-        
-        query.edit_message_text(text=text_header + leaderboard_text, reply_markup=reply_markup, parse_mode='HTML')
-        
+    lb_data = get_leaderboard_data(period, group_id)
+    
+    keyboard = [
+        [InlineKeyboardButton("📅 Today", callback_data=f'lb_today_{group_id}'),
+         InlineKeyboardButton("📆 Week", callback_data=f'lb_week_{group_id}')],
+        [InlineKeyboardButton("🌍 Overall", callback_data=f'lb_overall_{group_id}')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    title = "Today" if period == "today" else ("This Week" if period == "week" else "Overall")
+    text_header = f"<b>🏆 Leaderboard ({title})</b>\n\n"
+    leaderboard_text = format_leaderboard_text(lb_data)
+    
+    query.edit_message_text(text=text_header + leaderboard_text, reply_markup=reply_markup, parse_mode='HTML')
+
 # --- FLASK ROUTE (Keep Alive) ---
 @app.route('/')
 def index():
@@ -345,11 +359,10 @@ def index():
 def run_bot():
     init_db()
     
-    # Create Updater and Dispatcher
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
     
-    # Register Handlers
+    # Handlers Register
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("myprofile", my_profile))
     dp.add_handler(CommandHandler("rank", show_rank))
@@ -362,9 +375,9 @@ def run_bot():
     updater.idle()
 
 if __name__ == '__main__':
-    # Run Flask in the main thread (to satisfy Render port binding)
-    # Run Bot in a separate thread
+    # Bot ko alag thread mein chalao
     bot_thread = Thread(target=run_bot)
     bot_thread.start()
     
+    # Flask ko main thread mein chalao taaki Render port bind kar paye
     app.run(host="0.0.0.0", port=PORT)
