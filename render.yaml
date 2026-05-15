@@ -1,9 +1,0 @@
-services:
-  - type: web
-    name: guess-the-alien-bot
-    env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
-    envVars:
-      - key: TELEGRAM_TOKEN
-        sync: false # You will set this in the Render Dashboard
