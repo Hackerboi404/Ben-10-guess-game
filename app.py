@@ -313,7 +313,7 @@ def format_leaderboard_text(data, group_id):
         count_str = f"{count:,}"
         
         # New Style: Medal 👤 Name • Count msgs
-        text += f"{medal} 👤 {clean_name} • {count_str} msgs\n"
+        text += f"{medal} 👤 {clean_name} • {count_str} \n"
         
     # Footer
     conn = sqlite3.connect(DB_NAME)
