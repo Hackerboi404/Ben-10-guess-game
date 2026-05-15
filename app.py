@@ -7,8 +7,8 @@ from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, Callb
 import random
 
 # --- CONFIGURATION ---
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # Replace with your actual Bot Token
-ADMIN_ID = 123456789  # Replace with your Telegram User ID to receive errors/logs
+BOT_TOKEN = "8790602142:AAF0gqNc7xYkeOxccIqTm16Sg9ObygClRec"  # Replace with your actual Bot Token
+ADMIN_ID = 8739215730  # Replace with your Telegram User ID to receive errors/logs
 
 # Logging
 logging.basicConfig(
