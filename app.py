@@ -10,12 +10,11 @@ import os
 from threading import Thread
 
 # --- CONFIGURATION ---
-# Render par Environment Variable use karna best hai, par default bhi diya hai
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8790602142:AAF0gqNc7xYkeOxccIqTm16Sg9ObygClRec")
 ADMIN_ID = 8739215730
 PORT = int(os.environ.get("PORT", 5000))
 
-# Flask App Setup (Render ko bind karne ke liye)
+# Flask App Setup
 app = Flask(__name__)
 
 # Logging Setup
@@ -32,7 +31,6 @@ def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
-    # Users Table
     c.execute('''CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
         username TEXT,
@@ -42,7 +40,6 @@ def init_db():
         last_msg_time TIMESTAMP
     )''')
     
-    # Message Logs Table
     c.execute('''CREATE TABLE IF NOT EXISTS message_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
@@ -50,7 +47,6 @@ def init_db():
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
     
-    # Spam Control Table
     c.execute('''CREATE TABLE IF NOT EXISTS spam_block (
         user_id INTEGER PRIMARY KEY,
         unblock_time TIMESTAMP
@@ -82,7 +78,6 @@ def is_user_spamming(user_id):
         if datetime.datetime.now() < unblock_time:
             return True
         else:
-            # Unblock user if time passed
             conn = sqlite3.connect(DB_NAME)
             c = conn.cursor()
             c.execute("DELETE FROM spam_block WHERE user_id = ?", (user_id,))
@@ -121,7 +116,6 @@ def update_user_data(user_id, username, first_name, group_id):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
-    # Update user stats
     c.execute('''INSERT INTO users (user_id, username, first_name, total_xp, total_msgs, last_msg_time)
                  VALUES (?, ?, ?, ?, ?, ?)
                  ON CONFLICT(user_id) DO UPDATE SET
@@ -132,7 +126,6 @@ def update_user_data(user_id, username, first_name, group_id):
                  last_msg_time = CURRENT_TIMESTAMP''',
               (user_id, username, first_name, 0, 0, datetime.datetime.now(), xp_gain))
     
-    # Log message
     c.execute("INSERT INTO message_log (user_id, group_id, timestamp) VALUES (?, ?, CURRENT_TIMESTAMP)",
               (user_id, group_id))
               
@@ -144,7 +137,7 @@ def update_user_data(user_id, username, first_name, group_id):
 
 def start(update: Update, context: CallbackContext):
     chat_id = update.effective_chat.id
-    if chat_id < 0: return # Ignore groups
+    if chat_id < 0: return 
     
     welcome_text = (
         "👋 <b>Welcome to the Leaderboard Bot!</b>\n\n"
@@ -157,7 +150,7 @@ def start(update: Update, context: CallbackContext):
     update.message.reply_text(welcome_text, parse_mode='HTML')
 
 def track_message(update: Update, context: CallbackContext):
-    if update.effective_chat.type == 'private': return # Ignore DMs
+    if update.effective_chat.type == 'private': return 
     
     user = update.effective_user
     if not user: return
@@ -174,7 +167,6 @@ def my_profile(update: Update, context: CallbackContext):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
-    # Get Total Stats
     c.execute("SELECT total_msgs, total_xp FROM users WHERE user_id = ?", (user_id,))
     user_data = c.fetchone()
     
@@ -185,13 +177,11 @@ def my_profile(update: Update, context: CallbackContext):
     
     total_msgs, total_xp = user_data
     
-    # Calculate Today's Stats
     today_start = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     c.execute("SELECT COUNT(*) FROM message_log WHERE user_id = ? AND timestamp >= ?", 
               (user_id, today_start.strftime('%Y-%m-%d %H:%M:%S')))
     today_msgs = c.fetchone()[0]
     
-    # Calculate Weekly Stats
     week_start = datetime.datetime.now() - timedelta(days=datetime.datetime.now().weekday())
     week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
     c.execute("SELECT COUNT(*) FROM message_log WHERE user_id = ? AND timestamp >= ?", 
@@ -228,7 +218,6 @@ def show_rank(update: Update, context: CallbackContext):
     user_xp = row[0]
     rank_name = get_rank_name(user_xp)
     
-    # Calculate Rank
     c.execute("SELECT user_id FROM users ORDER BY total_xp DESC")
     all_users = c.fetchall()
     user_rank = 1
@@ -350,19 +339,21 @@ def leaderboard_button_callback(update: Update, context: CallbackContext):
     
     query.edit_message_text(text=text_header + leaderboard_text, reply_markup=reply_markup, parse_mode='HTML')
 
-# --- FLASK ROUTE (Keep Alive) ---
+# --- FLASK ROUTE ---
 @app.route('/')
 def index():
     return "Bot is running and alive!"
 
-# --- BOT THREAD FUNCTION ---
-def run_bot():
+# --- MAIN EXECUTION ---
+if __name__ == '__main__':
+    # 1. Initialize Database
     init_db()
     
+    # 2. Setup Bot
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
     
-    # Handlers Register
+    # 3. Register Handlers
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("myprofile", my_profile))
     dp.add_handler(CommandHandler("rank", show_rank))
@@ -370,14 +361,13 @@ def run_bot():
     dp.add_handler(CallbackQueryHandler(leaderboard_button_callback, pattern='^lb_'))
     dp.add_handler(MessageHandler(Filters.all & ~Filters.command, track_message))
     
-    # Start Polling
+    # 4. Start Bot Polling (Non-blocking)
     updater.start_polling()
-    updater.idle()
-
-if __name__ == '__main__':
-    # Bot ko alag thread mein chalao
-    bot_thread = Thread(target=run_bot)
-    bot_thread.start()
     
-    # Flask ko main thread mein chalao taaki Render port bind kar paye
-    app.run(host="0.0.0.0", port=PORT)
+    # 5. Run Flask in a separate thread so it doesn't block the main thread
+    # Main thread must stay for updater.idle()
+    flask_thread = Thread(target=app.run, kwargs={'host': '0.0.0.0', 'port': PORT})
+    flask_thread.start()
+    
+    # 6. Keep the main thread alive (This fixes the Signal Error)
+    updater.idle()
